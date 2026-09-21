@@ -557,8 +557,8 @@ input[type=color]::-webkit-color-swatch{border:none;border-radius:6px;}
     <button id="btnExport" class="btn accent" disabled>Export</button>
   </header>
 
-  <input type="file" id="videoInput" accept="video/*" hidden>
-  <input type="file" id="audioInput" accept="audio/*" hidden>
+  <input type="file" id="videoInput" accept="video/*" style="position:fixed;left:-10000px;top:0;width:1px;height:1px;opacity:0.01;z-index:-1;">
+  <input type="file" id="audioInput" accept="audio/*" style="position:fixed;left:-10000px;top:0;width:1px;height:1px;opacity:0.01;z-index:-1;">
 
   <!-- ================= WORKSPACE ================= -->
   <div class="workspace">
@@ -1410,6 +1410,16 @@ videoInput.addEventListener('change', function(e){
 });
 
 function loadVideoFile(file){
+  /* --- lightweight validity guard (Import only) --- */
+  var nameLower = (file.name || '').toLowerCase();
+  var typeOk = !file.type ||
+               file.type.indexOf('video') === 0 ||
+               /\.(mp4|m4v|webm|mkv|mov|3gp|3g2|avi|ogv|ts|flv|wmv|mts|m2ts)$/.test(nameLower);
+  if (!typeOk){
+    toast('That file does not look like a video. Please choose a video file.');
+    return;
+  }
+
   if (currentVideoURL) {
     try { URL.revokeObjectURL(currentVideoURL); } catch(err){}
     currentVideoURL = null;
@@ -1490,6 +1500,34 @@ function setVideoReady(ready){
   btnExport.disabled = !(ready && canExport);
   emptyHint.style.display = ready ? 'none' : 'flex';
   needsRedraw = true;
+}
+
+/* =========================================================
+   IMPORT HELPERS (Android WebView safe file picker)
+   ========================================================= */
+var videoImportLabel = document.querySelector('label[for="videoInput"]');
+var audioImportLabel = document.querySelector('label[for="audioInput"]');
+
+function openFilePicker(input){
+  try { input.value = ''; } catch(e){}
+  try {
+    input.click();
+  } catch(e){
+    toast('Could not open the file picker on this device.');
+  }
+}
+
+if (videoImportLabel){
+  videoImportLabel.addEventListener('click', function(e){
+    e.preventDefault();
+    openFilePicker(videoInput);
+  });
+}
+if (audioImportLabel){
+  audioImportLabel.addEventListener('click', function(e){
+    e.preventDefault();
+    openFilePicker(audioInput);
+  });
 }
 
 /* =========================================================
@@ -2121,6 +2159,101 @@ function waitForTime(endTime, onTick){
 }
 
 var exportURL = null;
+var exportBlob = null;
+var exportFileName = 'edited-video.webm';
+
+/* =========================================================
+   ANDROID WEBVIEW EXPORT BRIDGE (download fallback)
+   ---------------------------------------------------------
+   Keeps the normal browser path 100% intact. If the native
+   side exposes an @JavascriptInterface named Android (or
+   AndroidBridge / AndroidInterface / NativeBridge / AndroidApp)
+   with a saveFile(base64, fileName, mimeType) method, that is
+   used instead of the <a download> click, which Android
+   WebView does not support on its own.
+   ========================================================= */
+function getAndroidSaveFn(){
+  var names = ['Android','AndroidBridge','AndroidInterface','NativeBridge','AndroidApp'];
+  for (var i = 0; i < names.length; i++){
+    var b = window[names[i]];
+    if (!b) continue;
+    try {
+      if (typeof b.saveFile === 'function'){
+        return function(b64, name, mime){ return b.saveFile(b64, name, mime); };
+      }
+      if (typeof b.saveBase64File === 'function'){
+        return function(b64, name, mime){ return b.saveBase64File(b64, name, mime); };
+      }
+      if (typeof b.saveFileBase64 === 'function'){
+        return function(b64, name, mime){ return b.saveFileBase64(b64, name, mime); };
+      }
+    } catch(e){ /* ignore and keep looking */ }
+  }
+  return null;
+}
+
+function triggerAnchorDownload(url, name){
+  try {
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    a.rel = 'noopener';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function(){
+      try { document.body.removeChild(a); } catch(e){}
+    }, 1500);
+  } catch(e){
+    toast('Download is not supported here.');
+  }
+}
+
+function saveExportFile(){
+  if (!exportBlob || !exportURL) return;
+
+  var saveFn = getAndroidSaveFn();
+
+  /* --- normal browser path (unchanged behaviour) --- */
+  if (!saveFn){
+    triggerAnchorDownload(exportURL, exportFileName);
+    return;
+  }
+
+  /* --- Android WebView path --- */
+  toast('Saving file…');
+  var reader = new FileReader();
+  reader.onloadend = function(){
+    var res = reader.result || '';
+    var b64 = (typeof res === 'string' && res.indexOf(',') >= 0) ? res.split(',')[1] : '';
+    if (!b64){
+      triggerAnchorDownload(exportURL, exportFileName);
+      return;
+    }
+    try {
+      saveFn(b64, exportFileName, exportBlob.type || 'application/octet-stream');
+      toast('Saved: ' + exportFileName);
+    } catch(e){
+      triggerAnchorDownload(exportURL, exportFileName);
+    }
+  };
+  reader.onerror = function(){
+    triggerAnchorDownload(exportURL, exportFileName);
+  };
+  try {
+    reader.readAsDataURL(exportBlob);
+  } catch(e){
+    triggerAnchorDownload(exportURL, exportFileName);
+  }
+}
+
+$('btnDownload').addEventListener('click', function(e){
+  if (exportBlob && getAndroidSaveFn()){
+    e.preventDefault();
+    saveExportFile();
+  }
+  /* otherwise the native <a download> behaviour runs untouched */
+});
 
 btnExport.addEventListener('click', function(){
   if (!canExport){
@@ -2161,6 +2294,7 @@ function startExport(){
     try { URL.revokeObjectURL(exportURL); } catch(e){}
     exportURL = null;
   }
+  exportBlob = null;
 
   var stream;
   try {
@@ -2283,11 +2417,13 @@ function startExport(){
     }
 
     exportURL = URL.createObjectURL(blob);
+    exportBlob = blob;
     var ext = type.indexOf('mp4') >= 0 ? 'mp4' : 'webm';
+    exportFileName = 'edited-video.' + ext;
 
     var dl = $('btnDownload');
     dl.href = exportURL;
-    dl.download = 'edited-video.' + ext;
+    dl.download = exportFileName;
 
     var rv = $('resultVideo');
     rv.src = exportURL;
@@ -2323,7 +2459,7 @@ $('btnShare').addEventListener('click', function(){
   }
   if (navigator.share){
     fetch(exportURL).then(function(r){ return r.blob(); }).then(function(blob){
-      var file = new File([blob], 'edited-video.webm', { type: blob.type });
+      var file = new File([blob], exportFileName || 'edited-video.webm', { type: blob.type });
       if (navigator.canShare && navigator.canShare({ files: [file] })){
         return navigator.share({ files: [file], title: 'Edited Video' });
       }
