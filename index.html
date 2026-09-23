@@ -2523,5 +2523,301 @@ window.addEventListener('beforeunload', function(){
 
 })();
 </script>
+
+<!-- ================= REMOTE ADS OVERLAY ================= -->
+<style>
+#remoteAdOverlay{
+  position:fixed; inset:0; z-index:99999;
+  display:none; align-items:center; justify-content:center;
+  padding:0; background:rgba(0,0,0,.82);
+}
+#remoteAdOverlay.show{display:flex;}
+#remoteAdBox{
+  position:relative; width:100%; height:100%;
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  gap:12px; overflow:hidden;
+}
+.remote-ad-media{
+  display:block; object-fit:contain; background:#000;
+  max-height:78vh; cursor:pointer;
+}
+.remote-ad-button{
+  border:0; font-weight:800; white-space:pre-line; cursor:pointer;
+  min-height:52px; padding:10px 18px;
+}
+#remoteAdCountdown{
+  position:absolute; top:14px; right:14px; z-index:4;
+  width:48px; height:48px; border-radius:50%;
+  display:none; align-items:center; justify-content:center;
+  background:rgba(0,0,0,.78); color:#fff;
+  border:2px solid rgba(255,255,255,.9);
+  font:700 16px Arial,sans-serif;
+}
+</style>
+
+<div id="remoteAdOverlay" aria-hidden="true">
+  <div id="remoteAdBox">
+    <div id="remoteAdCountdown"></div>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  var ADS_JSON_URL =
+    "https://boktoss2345.github.io/Video-Editing-Studio-Maker-Trim-Effects-Filters-Music-Creator-74314/ads.json";
+
+  var overlay = document.getElementById("remoteAdOverlay");
+  var box = document.getElementById("remoteAdBox");
+  var countdownEl = document.getElementById("remoteAdCountdown");
+
+  var config = null;
+  var adIndex = 0;
+  var closeTimer = null;
+  var countdownTimer = null;
+  var repeatTimer = null;
+  var showing = false;
+
+  function num(v, fallback){
+    v = Number(v);
+    return isFinite(v) ? v : fallback;
+  }
+
+  function clearTimers(){
+    if(closeTimer){ clearTimeout(closeTimer); closeTimer = null; }
+    if(countdownTimer){ clearInterval(countdownTimer); countdownTimer = null; }
+  }
+
+  function openUrl(url){
+    if(!url) return;
+    try{
+      // Android WebView can intercept amzn:// and open Amazon Appstore.
+      window.location.href = url;
+    }catch(e){}
+  }
+
+  function clearAdElements(){
+    var nodes = box.querySelectorAll(".remote-dynamic");
+    for(var i=0;i<nodes.length;i++) nodes[i].remove();
+    countdownEl.style.display = "none";
+  }
+
+  function applySize(el, item){
+    var wp = num(item.widthPercent, 82);
+    el.style.width = Math.max(1, Math.min(100, wp)) + "%";
+    if(item.maxWidthDp) el.style.maxWidth = num(item.maxWidthDp, 420) + "px";
+    if(item.cornerRadiusDp) el.style.borderRadius = num(item.cornerRadiusDp, 0) + "px";
+    if(item.marginDp) el.style.margin = num(item.marginDp, 0) + "px";
+  }
+
+  function makeClickable(el, item){
+    if(item.clickable && item.url){
+      el.setAttribute("role","link");
+      el.tabIndex = 0;
+      el.addEventListener("click", function(){ openUrl(item.url); });
+      el.addEventListener("keydown", function(e){
+        if(e.key === "Enter" || e.key === " "){
+          e.preventDefault();
+          openUrl(item.url);
+        }
+      });
+    }
+  }
+
+  function addImage(item){
+    var img = document.createElement("img");
+    img.className = "remote-ad-media remote-dynamic";
+    img.src = item.src || "";
+    img.alt = "Advertisement";
+    img.style.objectFit = item.contentScale === "fill" ? "cover" : "contain";
+    applySize(img, item);
+    makeClickable(img, item);
+    box.appendChild(img);
+  }
+
+  function addVideo(item){
+    var v = document.createElement("video");
+    v.className = "remote-ad-media remote-dynamic";
+    v.src = item.src || "";
+    v.autoplay = item.autoplay !== false;
+    v.loop = item.loop !== false;
+    v.muted = item.muted !== false;
+    v.controls = item.controls === true;
+    v.playsInline = true;
+    v.setAttribute("playsinline","");
+    v.setAttribute("webkit-playsinline","");
+    v.preload = "auto";
+    v.style.objectFit = item.contentScale === "fill" ? "cover" : "contain";
+    applySize(v, item);
+    makeClickable(v, item);
+    box.appendChild(v);
+    if(v.autoplay){
+      var p = v.play();
+      if(p && p.catch) p.catch(function(){});
+    }
+  }
+
+  function addButton(item){
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = "remote-ad-button remote-dynamic";
+    b.textContent = item.text || "DOWNLOAD";
+    b.style.background = item.backgroundColor || "#FFD400";
+    b.style.color = item.textColor || "#000";
+    b.style.fontSize = num(item.textSizeSp,18) + "px";
+    b.style.borderRadius = num(item.cornerRadiusDp,16) + "px";
+    applySize(b, item);
+    makeClickable(b, item);
+    box.appendChild(b);
+  }
+
+  function startCountdown(seconds, autoClose){
+    var left = Math.max(0, Math.ceil(num(seconds, 20)));
+    countdownEl.textContent = left;
+    countdownEl.style.display = "flex";
+
+    countdownTimer = setInterval(function(){
+      left--;
+      countdownEl.textContent = Math.max(0,left);
+      if(left <= 0){
+        clearInterval(countdownTimer);
+        countdownTimer = null;
+        if(autoClose !== false) hideAd();
+      }
+    },1000);
+  }
+
+  function hideAd(){
+    if(!showing) return;
+    showing = false;
+    clearTimers();
+
+    var videos = box.querySelectorAll("video.remote-dynamic");
+    for(var i=0;i<videos.length;i++){
+      try{ videos[i].pause(); }catch(e){}
+    }
+
+    overlay.classList.remove("show");
+    overlay.setAttribute("aria-hidden","true");
+    clearAdElements();
+
+    scheduleNext();
+  }
+
+  function enabledAds(){
+    if(!config || !Array.isArray(config.ads)) return [];
+    return config.ads.filter(function(ad){ return ad && ad.enabled !== false; });
+  }
+
+  function pickAd(list){
+    if(!list.length) return null;
+    var mode = config && config.behavior ? config.behavior.selectionMode : "sequence";
+
+    if(mode === "random"){
+      return list[Math.floor(Math.random()*list.length)];
+    }
+
+    var ad = list[adIndex % list.length];
+    adIndex = (adIndex + 1) % list.length;
+    return ad;
+  }
+
+  function showAd(){
+    if(showing || !config || config.enabled === false) return;
+
+    var list = enabledAds();
+    var ad = pickAd(list);
+    if(!ad) return;
+
+    showing = true;
+    clearTimers();
+    clearAdElements();
+
+    var elements = Array.isArray(ad.elements) ? ad.elements : [];
+    var countdownItem = null;
+
+    elements.forEach(function(item){
+      if(!item || item.enabled === false) return;
+      if(item.type === "image") addImage(item);
+      else if(item.type === "video") addVideo(item);
+      else if(item.type === "button") addButton(item);
+      else if(item.type === "countdown") countdownItem = item;
+    });
+
+    overlay.style.background =
+      (config.overlay && config.overlay.scrimColor)
+      ? config.overlay.scrimColor
+      : "rgba(0,0,0,.82)";
+
+    overlay.classList.add("show");
+    overlay.setAttribute("aria-hidden","false");
+
+    var showSeconds = num(config.showDurationSeconds,20);
+    var cdSeconds = countdownItem
+      ? num(countdownItem.seconds, showSeconds)
+      : (config.countdown ? num(config.countdown.seconds,showSeconds) : showSeconds);
+
+    var cdEnabled = countdownItem
+      ? countdownItem.enabled !== false
+      : !!(config.countdown && config.countdown.enabled);
+
+    var autoClose = countdownItem
+      ? countdownItem.autoCloseAtZero !== false
+      : !(config.countdown && config.countdown.autoCloseAtZero === false);
+
+    if(cdEnabled) startCountdown(cdSeconds, autoClose);
+
+    // Safety close based on global showDurationSeconds.
+    closeTimer = setTimeout(hideAd, Math.max(1,showSeconds)*1000);
+  }
+
+  function scheduleNext(){
+    if(!config || config.enabled === false) return;
+    if(repeatTimer) clearTimeout(repeatTimer);
+
+    var sec = Math.max(0, num(config.repeatEverySeconds,10));
+    repeatTimer = setTimeout(function(){
+      if(config.behavior && config.behavior.refreshConfigBeforeShow){
+        loadConfig(true).then(showAd).catch(showAd);
+      }else{
+        showAd();
+      }
+    }, sec*1000);
+  }
+
+  function loadConfig(noCache){
+    var url = ADS_JSON_URL + (noCache ? ("?t=" + Date.now()) : "");
+    return fetch(url, {cache:"no-store"})
+      .then(function(r){
+        if(!r.ok) throw new Error("ads.json HTTP " + r.status);
+        return r.json();
+      })
+      .then(function(data){
+        config = data;
+        return data;
+      });
+  }
+
+  // Read ads.json immediately when index starts.
+  function bootRemoteAds(){
+    loadConfig(true).then(function(data){
+      if(!data || data.enabled === false) return;
+      var delay = Math.max(0, num(data.initialDelaySeconds,5));
+      setTimeout(showAd, delay*1000);
+    }).catch(function(err){
+      // Ads failure must never break the editor.
+      console.warn("Remote ads config unavailable:", err);
+    });
+  }
+
+  if(document.readyState === "loading"){
+    document.addEventListener("DOMContentLoaded", bootRemoteAds, {once:true});
+  }else{
+    bootRemoteAds();
+  }
+})();
+</script>
+
 </body>
 </html>
